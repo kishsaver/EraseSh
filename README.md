@@ -18,7 +18,7 @@ apt環境を想定
 USB Bootにて`root`としてログイン
 ログイン時，  
 `Are you sure you want to ERASE all marked targets? (yes/NO):`  
-と表示されるので`yes`で開始
+と表示されるので`yes`で開始  
 処理終了後`Reboot the system now? (yes/NO):`を`yes`で再起動  
 
 出力は
