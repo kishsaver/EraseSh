@@ -87,35 +87,62 @@ for dev in /sys/block/*; do
 
     echo "[*] Erasing $target" | tee -a "$LOGFILE"
 
-    # Partition table wipe
+    # Partition table wipe (metadata)
     wipefs -a "$target" || true
     sgdisk --zap-all "$target" || true
 
-    # If NVMe device → use nvme-cli
-    if [[ "$disk" == nvme* ]]; then
-        if command -v nvme &>/dev/null; then
-            echo "[*] Trying NVMe secure format on $target..." | tee -a "$LOGFILE"
-            if nvme format "$target" -s 1 -f; then
-                echo "[+] $target securely erased with NVMe format" | tee -a "$LOGFILE"
+    # ===== SSD向け: コントローラ機能での消去を最優先 =====
+
+    # NVMe: セキュアフォーマット（暗号/ユーザーデータ消去）
+    if [[ "$disk" == nvme* ]] && command -v nvme &>/dev/null; then
+        echo "[*] NVMe secure format (ses=2 → 1) on $target..." | tee -a "$LOGFILE"
+        if nvme format "$target" --ses=2 -f; then
+            echo "[+] $target securely erased with NVMe format (ses=2)" | tee -a "$LOGFILE"
+            continue
+        fi
+        if nvme format "$target" --ses=1 -f; then
+            echo "[+] $target securely erased with NVMe format (ses=1)" | tee -a "$LOGFILE"
+            continue
+        fi
+    fi
+
+    # SATA SSD: ATA Secure Erase（enhanced優先）
+    if [[ "$disk" == sd* ]] && command -v hdparm &>/dev/null; then
+        if hdparm -I "$target" 2>/dev/null | grep -qi frozen; then
+            echo "[!] $target is 'frozen'; suspend/resume then rerun to allow ATA Secure Erase" | tee -a "$LOGFILE"
+        else
+            echo "[*] Trying ATA Secure Erase on $target..." | tee -a "$LOGFILE"
+            hdparm --user-master u --security-set-pass p "$target" || true
+            if hdparm -I "$target" 2>/dev/null | grep -qi "supported: enhanced erase"; then
+                if hdparm --user-master u --security-erase-enhanced p "$target"; then
+                    echo "[+] $target securely erased with ATA Enhanced Secure Erase" | tee -a "$LOGFILE"
+                    continue
+                fi
+            fi
+            if hdparm --user-master u --security-erase p "$target"; then
+                echo "[+] $target securely erased with ATA Secure Erase" | tee -a "$LOGFILE"
                 continue
             fi
         fi
     fi
 
-    # If SATA device → try hdparm
-    if command -v hdparm &>/dev/null; then
-        echo "[*] Trying Secure Erase on $target..." | tee -a "$LOGFILE"
-        hdparm --user-master u --security-set-pass p "$target" || true
-        if hdparm --user-master u --security-erase p "$target"; then
-            echo "[+] $target securely erased with hdparm" | tee -a "$LOGFILE"
-            continue
+    # ===== フォールバック: 全域TRIM（discard） =====
+    if command -v blkdiscard &>/dev/null; then
+        if [[ -r "/sys/block/$disk/queue/discard_max_bytes" ]] && \
+           (( $(cat "/sys/block/$disk/queue/discard_max_bytes" 2>/dev/null || echo 0) > 0 )); then
+            echo "[*] Trying blkdiscard (TRIM) on $target..." | tee -a "$LOGFILE"
+            if blkdiscard -f "$target"; then
+                echo "[+] $target discarded (TRIM complete)" | tee -a "$LOGFILE"
+                continue
+            fi
         fi
     fi
 
-    # Fallback shred
-    echo "[*] Overwriting $target with shred (this may take a long time)..." | tee -a "$LOGFILE"
-    shred -v -n 3 "$target" | tee -a "$LOGFILE"
-    echo "[+] $target overwritten with shred" | tee -a "$LOGFILE"
+    # ===== 上書き（SSDでは保証弱め。主にパススルー不可時の保険） =====
+    echo "[*] Overwriting $target (last resort; may take a long time)..." | tee -a "$LOGFILE"
+    # HDDは1パスで十分。SSDもここでは1パスに統一
+    shred -v -n 1 "$target" | tee -a "$LOGFILE"
+    echo "[+] $target overwritten" | tee -a "$LOGFILE"
 done
 
 echo "=================================================" | tee -a "$LOGFILE"
